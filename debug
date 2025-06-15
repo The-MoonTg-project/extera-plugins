@@ -2,13 +2,13 @@
 
 DIR=$1
 
-for file in "$DIR"/*.py; do
-  filename=$(basename "$file")
+for file in "$DIR"/*.plugin; do
+  filename=$(basename "$file" .plugin)
 
-  adb push "$file" /sdcard/Download/"$filename"
+  adb push "$file" /sdcard/Download/"$filename".py
 
-  adb shell "su -c 'cp /sdcard/Download/$filename /data/data/com.exteragram.messenger/files/plugins/'"
-  adb shell "su -c 'chmod 666 /data/data/com.exteragram.messenger/files/plugins/$filename'"
+  adb shell "su -c 'cp /sdcard/Download/$filename.py /data/data/com.exteragram.messenger/files/plugins/'"
+  adb shell "su -c 'chmod 666 /data/data/com.exteragram.messenger/files/plugins/$filename.py'"
 done
 
 adb shell "su -c 'rm -rf /data/data/com.exteragram.messenger/files/plugins/__pycache__/'"
