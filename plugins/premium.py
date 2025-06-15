@@ -1,0 +1,72 @@
+# MIT License
+
+# Copyright (c) 2025 AbhiTheModder
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from android_utils import log
+from base_plugin import BasePlugin, MethodReplacement
+from ui.settings import Switch
+from java import jclass  # type: ignore
+
+__id__ = "premium"
+__name__ = "Premium"
+__description__ = "Enable local Telegram premium"
+__author__ = "@AbhiModsX"
+__version__ = "1.0.0"
+__icon__ = "Menhera_kun2/0"
+__min_version__ = "11.12.0"
+
+
+class isPremiumHook(MethodReplacement):
+    def replace_hooked_method(self, param):
+        return True
+
+
+class PremiumPlugin(BasePlugin):
+    def create_settings(self):
+        return [
+            Switch(
+                key="anti_del",
+                text="Anti Delete",
+                default=False,
+                subtext="Enable to prevent message deletion",
+            ),
+        ]
+
+    def on_plugin_load(self):
+        try:
+            UserConfigClass = jclass("org.telegram.messenger.UserConfig").getClass()
+
+            if not UserConfigClass:
+                log("UserConfigClass is None. Ensure correct path.")
+                return
+
+            is_premium_method = UserConfigClass.getDeclaredMethod("isPremium")
+            is_premium_method.setAccessible(True)
+
+            self.hook_method(is_premium_method, isPremiumHook())
+
+            anti_del = self.get_setting("anti_del", False)
+            if anti_del:
+                self.add_on_send_message_hook()
+
+            log("Successfully hooked UserConfig.isPremium() to always return True.")
+        except Exception as e:
+            log(f"Failed to hook UserConfig.isPremium: {e}")

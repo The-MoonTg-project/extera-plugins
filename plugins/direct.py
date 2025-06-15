@@ -1,0 +1,410 @@
+# MIT License
+
+# Copyright (c) 2025 AbhiTheModder
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+
+import json
+import re
+import urllib.parse
+from html.parser import HTMLParser
+from typing import Any
+
+import requests
+from android_utils import log
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from client_utils import get_last_fragment, get_send_messages_helper, run_on_queue
+from java.util import ArrayList  # type: ignore
+from markdown_utils import parse_markdown
+from org.telegram.ui.ActionBar import AlertDialog  # type: ignore
+
+__id__ = "direct"
+__name__ = "Direct Links"
+__description__ = "Direct link generator and premium features"
+__author__ = "@AbhiModsX"
+__version__ = "1.0.0"
+__icon__ = "Menhera_kun2/1"
+__min_version__ = "11.12.0"
+
+
+def useragent() -> str:
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+
+
+def androidfilehost(url: str) -> str:
+    try:
+        link = re.findall(r"\bhttps?://.*androidfilehost.*fid.*\S+", url)[0]
+    except IndexError:
+        return "`No AFH links found`\n"
+
+    fid = re.findall(r"\?fid=([^&]+)", link)[0]
+    session = requests.Session()
+    ua = useragent()
+
+    session.get(link, headers={"user-agent": ua}, allow_redirects=True)
+
+    headers = {
+        "origin": "https://androidfilehost.com",
+        "referer": f"https://androidfilehost.com/?fid={fid}",
+        "user-agent": ua,
+        "x-requested-with": "XMLHttpRequest",
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "x-mod-sbb-ctype": "xhr",
+    }
+    data = {"submit": "submit", "action": "getdownloadmirrors", "fid": fid}
+    reply = ""
+    error = "`Error: Can't find Mirrors for the link`\n"
+
+    try:
+        res = session.post(
+            "https://androidfilehost.com/libs/otf/mirrors.otf.php",
+            headers=headers,
+            data=data,
+        )
+        mirrors = res.json().get("MIRRORS")
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return error
+
+    if not mirrors:
+        return error
+
+    for mirror in mirrors:
+        name = mirror.get("name", "Mirror")
+        dl_url = mirror.get("url")
+        if dl_url:
+            reply += f"[{name}]({dl_url}) "
+
+    return reply or error
+
+
+class MirrorListParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_mirror_list = False
+        self.capture_li = False
+        self.mirrors = []
+        self.current_id = None
+        self.current_text = ""
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "ul" and attrs.get("id") == "mirrorList":
+            self.in_mirror_list = True
+        elif self.in_mirror_list and tag == "li":
+            self.current_id = attrs.get("id")
+            self.capture_li = True
+            self.current_text = ""
+
+    def handle_endtag(self, tag):
+        if tag == "ul":
+            self.in_mirror_list = False
+        elif tag == "li" and self.capture_li:
+            self.capture_li = False
+            self.mirrors.append((self.current_id, self.current_text.strip()))
+
+    def handle_data(self, data):
+        if self.capture_li:
+            self.current_text += data
+
+
+class GDriveParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_name_span = False
+        self.name = ""
+        self.download_path = ""
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "a" and attrs.get("id") == "uc-download-link":
+            self.download_path = attrs.get("href", "")
+        elif tag == "span" and attrs.get("class") == "uc-name-size":
+            self.in_name_span = True
+
+    def handle_endtag(self, tag):
+        if tag == "span" and self.in_name_span:
+            self.in_name_span = False
+
+    def handle_data(self, data):
+        if self.in_name_span:
+            self.name += data.strip()
+
+
+class MediafireParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_filename_div = False
+        self.filename = ""
+        self.download_url = ""
+        self.filesize = ""
+        self.current_link = ""
+        self.capture_text = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "a" and attrs.get("aria-label") == "Download file":
+            self.download_url = attrs.get("href", "")
+            self.capture_text = True
+        if tag == "div" and attrs.get("class") == "filename":
+            self.in_filename_div = True
+
+    def handle_endtag(self, tag):
+        if tag == "div" and self.in_filename_div:
+            self.in_filename_div = False
+        if tag == "a" and self.capture_text:
+            self.capture_text = False
+
+    def handle_data(self, data):
+        if self.in_filename_div:
+            self.filename += data.strip()
+        if self.capture_text and not self.filesize and "(" in data:
+            match = re.search(r"\(([^)]+)\)", data)
+            if match:
+                self.filesize = f"({match.group(1)})"
+
+
+class OSDNParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_mirror_form = False
+        self.in_td = False
+        self.current_input = None
+        self.current_td = ""
+        self.download_path = ""
+        self.file_name = ""
+        self.mirrors = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "a" and attrs.get("class") == "mirror_link":
+            self.download_path = attrs.get("href", "")
+        elif tag == "form" and attrs.get("id") == "mirror-select-form":
+            self.in_mirror_form = True
+        elif self.in_mirror_form and tag == "input" and attrs.get("type") == "radio":
+            self.current_input = attrs.get("value")
+        elif self.in_mirror_form and tag == "td":
+            self.in_td = True
+            self.current_td = ""
+
+    def handle_endtag(self, tag):
+        if tag == "td":
+            self.in_td = False
+        elif tag == "tr" and self.current_input and self.current_td:
+            name_match = re.search(r"\((.*?)\)", self.current_td.strip())
+            name = name_match.group(1) if name_match else self.current_input
+            self.mirrors.append((self.current_input, name))
+            self.current_input = None
+            self.current_td = ""
+
+    def handle_data(self, data):
+        if self.in_td:
+            self.current_td += data
+
+
+def osdn(url: str) -> str:
+    base = "https://osdn.net"
+    try:
+        link = re.findall(r"\bhttps?://.*osdn\.net\S+", url)[0]
+    except IndexError:
+        return "`No OSDN links found`\n"
+
+    response = requests.get(link, allow_redirects=True)
+    parser = OSDNParser()
+    parser.feed(response.text)
+
+    if not parser.download_path:
+        return "`Could not extract download path`\n"
+
+    direct_link = urllib.parse.unquote(base + parser.download_path)
+    file_name = direct_link.split("/")[-1]
+    reply = f"Mirrors for __{file_name}__\n"
+
+    for mirror_id, name in parser.mirrors:
+        dl_url = re.sub(r"m=(.*?)&f", f"m={mirror_id}&f", direct_link)
+        reply += f"[{name}]({dl_url}) "
+
+    return reply
+
+
+def mediafire(url: str) -> str:
+    try:
+        link = re.findall(r"\bhttps?://.*mediafire\.com\S+", url)[0]
+    except IndexError:
+        return "`No MediaFire links found`\n"
+
+    html = requests.get(link).text
+    parser = MediafireParser()
+    parser.feed(html)
+
+    if not parser.download_url:
+        return "`Could not extract download link`\n"
+
+    name = parser.filename or "Unknown_File"
+    size = parser.filesize or ""
+    return f"[{name} {size}]({parser.download_url})\n"
+
+
+def gdrive(url: str) -> str:
+    drive = "https://drive.google.com"
+    try:
+        link = re.findall(r"\bhttps?://drive\.google\.com\S+", url)[0]
+    except IndexError:
+        return "`No Google drive links found`\n"
+
+    file_id = ""
+    if "view" in link:
+        file_id = link.split("/")[-2]
+    elif "open?id=" in link:
+        file_id = link.split("open?id=")[1].strip()
+    elif "uc?id=" in link:
+        file_id = link.split("uc?id=")[1].strip()
+
+    url = f"{drive}/uc?export=download&id={file_id}"
+    download = requests.get(url, stream=True, allow_redirects=False)
+    cookies = download.cookies
+    reply = ""
+
+    try:
+        dl_url = download.headers["location"]
+        if "accounts.google.com" in dl_url:
+            return "`Link is not public!`\n"
+        name = "Direct Download Link"
+    except KeyError:
+        parser = GDriveParser()
+        parser.feed(download.text)
+        if not parser.download_path:
+            return "`Failed to extract direct link.`\n"
+        export = drive + parser.download_path
+        name = parser.name or "Direct Download Link"
+        response = requests.get(
+            export, stream=True, allow_redirects=False, cookies=cookies
+        )
+        dl_url = response.headers.get("location", "")
+        if "accounts.google.com" in dl_url:
+            return "`Link is not public!`\n"
+
+    reply += f"[{name}]({dl_url})\n"
+    return reply
+
+
+def sourceforge(url: str) -> str:
+    try:
+        link = re.findall(r"\bhttps?://.*sourceforge\.net\S+", url)[0]
+    except IndexError:
+        return "`No SourceForge links found`\n"
+
+    file_path = re.findall(r"files(.*)/download", link)[0]
+    reply = f"Mirrors for __{file_path.split('/')[-1]}__\n"
+    project = re.findall(r"projects?/(.*?)/files", link)[0]
+
+    mirrors_url = (
+        f"https://sourceforge.net/settings/mirror_choices?"
+        f"projectname={project}&filename={file_path}"
+    )
+    html = requests.get(mirrors_url).text
+    parser = MirrorListParser()
+    parser.feed(html)
+
+    for mirror_id, text in parser.mirrors[1:]:  # Skip automatic mirror
+        name_match = re.search(r"\((.*?)\)", text)
+        name = name_match.group(1) if name_match else mirror_id
+        dl_url = f"https://{mirror_id}.dl.sourceforge.net/project/{project}/{file_path}"
+        reply += f"[{name}]({dl_url}) "
+
+    return reply
+
+
+class DirectLinksPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def on_plugin_unload(self):
+        return self.rremove_on_send_message_hook()
+
+    def _process_links(self, params, progress_dialog):
+        try:
+            parts = params.message.strip().split(" ", 1)
+            if len(parts) < 2:
+                params.message = "Usage: .direct [url]"
+                if progress_dialog:
+                    progress_dialog.dismiss()
+                get_send_messages_helper().sendMessage(params)
+                return
+
+            url = parts[1].strip()
+            reply = ""
+            links = re.findall(r"\bhttps?://.*\.\S+", url)
+
+            if not links:
+                params.message = "No links found!"
+                if progress_dialog:
+                    progress_dialog.dismiss()
+                get_send_messages_helper().sendMessage(params)
+                return
+
+            for link in links:
+                if "drive.google.com" in link:
+                    reply += gdrive(link)
+                elif "sourceforge.net" in link:
+                    reply += sourceforge(link)
+                elif "mediafire.com" in link:
+                    reply += mediafire(link)
+                elif "osdn.net" in link:
+                    reply += osdn(link)
+                else:
+                    reply += (
+                        re.findall(r"\bhttps?://(.*?[^/]+)", link)[0]
+                        + " is not supported\n"
+                    )
+
+            parsed_reply = parse_markdown(reply)
+            params.message = parsed_reply.text
+            arr = ArrayList()
+            for ent in parsed_reply.entities:
+                arr.add(ent.to_tlrpc_object())
+            params.entities = arr
+            get_send_messages_helper().sendMessage(params)
+
+        except Exception as e:
+            log(f"Direct link plugin error: {str(e)}")
+            params.message = f"Error: {str(e)}"
+            get_send_messages_helper().sendMessage(params)
+        finally:
+            if progress_dialog:
+                try:
+                    progress_dialog.dismiss()
+                except Exception:
+                    pass
+
+    def on_send_message_hook(self, account: int, params: Any) -> HookResult:
+        if not isinstance(params.message, str) or not params.message.startswith(
+            ".direct"
+        ):
+            return HookResult()
+
+        try:
+            progress_dialog = AlertDialog(get_last_fragment().getParentActivity(), 3)
+            progress_dialog.setMessage("Processing links...")
+            progress_dialog.show()
+        except Exception:
+            progress_dialog = None
+
+        run_on_queue(lambda: self._process_links(params, progress_dialog))
+        return HookResult(strategy=HookStrategy.CANCEL)
