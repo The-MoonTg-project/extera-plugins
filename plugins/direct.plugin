@@ -38,7 +38,7 @@ from org.telegram.ui.ActionBar import AlertDialog  # type: ignore
 __id__ = "direct"
 __name__ = "Direct Links"
 __description__ = "Direct link generator and premium features"
-__author__ = "@AbhiModsX"
+__author__ = "@moonuserbot"
 __version__ = "1.0.0"
 __icon__ = "Menhera_kun2/1"
 __min_version__ = "11.12.0"

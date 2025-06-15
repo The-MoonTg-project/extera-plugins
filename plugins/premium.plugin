@@ -28,7 +28,7 @@ from java import jclass  # type: ignore
 __id__ = "premium"
 __name__ = "Premium"
 __description__ = "Enable local Telegram premium"
-__author__ = "@AbhiModsX"
+__author__ = "@moonuserbot"
 __version__ = "1.0.0"
 __icon__ = "Menhera_kun2/0"
 __min_version__ = "11.12.0"
